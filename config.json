@@ -1,0 +1,21 @@
+{
+    "data_flag": "pathmnist",
+    "batch_size": 64,
+    "num_workers": 2,
+    "num_epochs": 25,
+    "learning_rate": 0.001,
+    "experiment_name": "medmnist_finetune",
+    "log_dir": "./logs",
+    "pretrained_path": "./pretrain/pathmnist/medmnist_resnet18/best_model.pth",
+    "freeze_cnn": false,
+    "lambda_mask": 1.0,
+    "lambda_fully_masked": 0.2,
+    "lambda_alignment": 0.5,
+    "upper_mask_level_threshold": 0.8,
+    "dynamic_masked_weight_min": 1.0,
+    "dynamic_masked_weight_max": 5.0,
+    "radial_radius": 3,
+    "radial_decay": 0.5,
+    "enable_radial_mask_noise": false,
+    "radial_mask_noise_range": 0.1
+} 
