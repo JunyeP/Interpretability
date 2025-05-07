@@ -61,12 +61,14 @@ def apply_radial_mask(soft_mask, radius=3, decay_factor=0.2):
 class MaskedLoss(nn.Module):
     def __init__(self, lambda_mask=1.0, lambda_fully_masked=0.05,
                  dynamic_masked_weight_min=1.0, dynamic_masked_weight_max=5.0,
-                 lambda_alignment=0.5, upper_mask_level_threshold=0.8):
+                 lambda_alignment=0.5, upper_mask_level_threshold=0.8,
+                 lambda_entropy=0.0):
         super(MaskedLoss, self).__init__()
         self.lambda_mask = lambda_mask
         self.lambda_fully_masked = lambda_fully_masked
         self.lambda_alignment = lambda_alignment
         self.upper_mask_level_threshold = upper_mask_level_threshold
+        self.lambda_entropy = lambda_entropy
         
         # Parameters for dynamic masked loss weighting
         self.dynamic_masked_weight_min = dynamic_masked_weight_min
@@ -75,8 +77,34 @@ class MaskedLoss(nn.Module):
         self.ce_loss = nn.CrossEntropyLoss(reduction='none')
         
     def forward(self, outputs, targets):
-        # Ensure targets are in the correct format (1D tensor)
-        targets = targets.squeeze().long()
+        # Ensure targets are shape [batch_size]
+        # Remove channel dim only if exists
+        if targets.dim() == 2 and targets.size(1) == 1:
+            targets = targets.squeeze(1)
+        # If scalar, convert to batch of size 1
+        elif targets.dim() == 0:
+            targets = targets.unsqueeze(0)
+        targets = targets.long()
+        
+        # Debug print for shapes
+        if targets.shape[0] == 0:
+            print(f"WARNING: Empty targets tensor detected. Shape: {targets.shape}")
+            print(f"Outputs shapes: masked_logits={outputs['masked_logits'].shape}, unmasked_logits={outputs['unmasked_logits'].shape}")
+            return {
+                'total_loss': torch.tensor(0.0, device=targets.device),
+                'classification_loss': torch.tensor(0.0, device=targets.device),
+                'masked_loss': torch.tensor(0.0, device=targets.device),
+                'unmasked_loss': torch.tensor(0.0, device=targets.device),
+                'masking_loss': torch.tensor(0.0, device=targets.device),
+                'fully_masked_loss': torch.tensor(0.0, device=targets.device),
+                'alignment_loss': torch.tensor(0.0, device=targets.device),
+                'alignment_divergence': torch.tensor(0.0, device=targets.device),
+                'mask_mean': torch.tensor(0.0, device=targets.device),
+                'binary_mask_mean': 0.0,
+                'fully_masked_pct': 0.0,
+                'dynamic_weight': torch.tensor(1.0, device=targets.device),
+                'entropy_loss': torch.tensor(0.0, device=targets.device)
+            }
         
         soft_mask = outputs['soft_mask']
         radial_mask = outputs['radial_mask']
@@ -127,8 +155,13 @@ class MaskedLoss(nn.Module):
         alignment_divergence = 1.0 - cosine_similarity.mean()
         alignment_loss = self.lambda_alignment * alignment_divergence
         
-        # Total loss with alignment term
-        total_loss = classification_loss + masking_loss + binary_loss + alignment_loss
+        # 5. Entropy regularizer - encourage mask values toward 0 or 1
+        eps = 1e-6
+        mask_entropy = -(soft_mask * torch.log(soft_mask + eps) + (1 - soft_mask) * torch.log(1 - soft_mask + eps))
+        entropy_loss = self.lambda_entropy * mask_entropy.mean()
+        
+        # Total loss with alignment and entropy terms
+        total_loss = classification_loss + masking_loss + binary_loss + alignment_loss + entropy_loss
         
         # Calculate binary mask metrics
         fully_masked_pixels = (radial_mask > self.upper_mask_level_threshold).float()
@@ -146,7 +179,8 @@ class MaskedLoss(nn.Module):
             'mask_mean': mask_mean,
             'binary_mask_mean': torch.mean(radial_mask).item(),
             'fully_masked_pct': fully_masked_pct,
-            'dynamic_weight': dynamic_weight
+            'dynamic_weight': dynamic_weight,
+            'entropy_loss': entropy_loss
         }
 
 def get_accuracy(outputs, labels):
@@ -195,11 +229,24 @@ def validate(model, val_loader, criterion, device):
         for batch_idx, (images, labels) in enumerate(progress_bar):
             images = images.to(device)
             labels = labels.to(device)
+            
             # Ensure labels shape is [batch_size]
-            if labels.dim() > 1 and labels.size(1) == 1:
+            # Remove channel dim only if exists
+            if labels.dim() == 2 and labels.size(1) == 1:
                 labels = labels.squeeze(1)
+            # If scalar, convert to batch of size 1
+            elif labels.dim() == 0:
+                labels = labels.unsqueeze(0)
+            labels = labels.long()
+            
+            # Skip empty batches
+            if labels.shape[0] == 0:
+                print(f"WARNING: Empty batch detected at batch {batch_idx}")
+                continue
+                
             if batch_idx == 0:  # Print device info for first batch
-                print(f"First batch - Images device: {images.device}, Labels device: {labels.device}")
+                print(f"Images device: {images.device}, Labels device: {labels.device}")
+                print(f"Images shape: {images.shape}, Labels shape: {labels.shape}")
             
             # Forward pass
             outputs = model(images)
@@ -237,8 +284,9 @@ def validate(model, val_loader, criterion, device):
     val_metrics['validation_time'] = end_time - start_time
     
     # Calculate global accuracy
-    val_metrics['masked_acc'] = (total_masked_correct / total_samples) * 100
-    val_metrics['unmasked_acc'] = (total_unmasked_correct / total_samples) * 100
+    if total_samples > 0:
+        val_metrics['masked_acc'] = (total_masked_correct / total_samples) * 100
+        val_metrics['unmasked_acc'] = (total_unmasked_correct / total_samples) * 100
     
     # Average the other metrics
     for key in val_metrics:
@@ -628,7 +676,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
         images = images.to(device)
         labels = labels.to(device)
         # Ensure labels shape is [batch_size]
-        if labels.dim() > 1 and labels.size(1) == 1:
+        if labels.dim() == 2 and labels.size(1) == 1:
             labels = labels.squeeze(1)
         if batch_idx == 0:  # Print device info for first batch
             print(f"First batch - Images device: {images.device}, Labels device: {labels.device}")
@@ -880,7 +928,8 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, c
         'val_fully_masked_loss': [], 'val_dynamic_weight': [],
         'val_alignment_loss': [], 'val_alignment_divergence': [],
         'val_masked_pixels_pct': [], 'val_fully_masked_pct': [],
-        'lambda_mask': [], 'lambda_fully_masked': [], 'lambda_alignment': []
+        'lambda_mask': [], 'lambda_fully_masked': [], 'lambda_alignment': [],
+        'lambda_entropy': []
     }
     
     # Initialize timing variables
@@ -924,6 +973,13 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, c
         else:
             current_lambda_alignment = 0.0
         criterion.lambda_alignment = current_lambda_alignment
+        
+        if epoch >= config['start_epoch_entropy']:
+            progress_ratio = (epoch - config['start_epoch_entropy']) / max(1, (config['num_epochs'] - 1 - config['start_epoch_entropy']))
+            current_lambda_entropy = config['initial_lambda_entropy'] + (config['final_lambda_entropy'] - config['initial_lambda_entropy']) * progress_ratio
+        else:
+            current_lambda_entropy = 0.0
+        criterion.lambda_entropy = current_lambda_entropy
         
         epoch_start_time = time.time()
         
@@ -974,6 +1030,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, c
         metrics_history['lambda_mask'].append(current_lambda_mask)
         metrics_history['lambda_fully_masked'].append(current_lambda_fully_masked)
         metrics_history['lambda_alignment'].append(current_lambda_alignment)
+        metrics_history['lambda_entropy'].append(current_lambda_entropy)
         
         # Print consolidated metrics
         print(f"\nEpoch {epoch+1}/{config['num_epochs']}")

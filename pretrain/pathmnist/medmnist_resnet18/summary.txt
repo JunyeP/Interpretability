@@ -1,0 +1,6 @@
+Best Validation Accuracy: 98.5206
+Final Validation Loss: 0.0665
+Final Validation Accuracy: 98.4906
+Final Test Loss: 0.7533
+Final Test Accuracy: 89.7214
+Final Test AUC: 0.9820

@@ -1,0 +1,3 @@
+TEST RESULTS:
+Loss: 0.7533, Acc: 89.72%
+AUC: 0.982, ACC: 0.897

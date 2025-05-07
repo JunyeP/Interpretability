@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore", message="torch.utils._pytree._register_pytree_
 def load_config():
     """Load configuration parameters for MedMNIST"""
     return {
-        'data_flag': 'pathmnist',  # Change to your desired MedMNIST dataset
+        'data_flag': 'pathmnist',  # Using organamnist dataset
         'batch_size': 64,
         'num_workers': 2,
         'num_epochs': 30,
@@ -68,7 +68,8 @@ def validate_model(model, criterion, val_loader, device):
     with torch.no_grad():
         for images, labels in val_loader:
             images = images.to(device)
-            labels = labels.squeeze().long().to(device)
+            labels = labels.long().view(-1).to(device)
+            
             outputs = model(images)
             loss = criterion(outputs, labels)
             batch_size = labels.size(0)
@@ -170,7 +171,8 @@ def main():
         train_loader_tqdm = tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['num_epochs']}")
         for images, labels in train_loader_tqdm:
             images = images.to(device)
-            labels = labels.squeeze().long().to(device)
+            labels = labels.long().view(-1).to(device)
+            
             outputs = model(images)
             loss = criterion(outputs, labels)
             optimizer.zero_grad()
@@ -206,7 +208,8 @@ def main():
     with torch.no_grad():
         for images, labels in test_loader:
             images = images.to(device)
-            labels = labels.squeeze().long().to(device)
+            labels = labels.long().view(-1).to(device)
+            
             outputs = model(images)
             outputs = outputs.softmax(dim=-1)
             y_score = torch.cat((y_score, outputs.cpu()), 0)
@@ -240,5 +243,4 @@ def main():
     print(f"\nSummary written to {summary_path}")
 
 if __name__ == "__main__":
-    print(INFO['pathmnist'])
     main()

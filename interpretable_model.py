@@ -55,13 +55,11 @@ class InterpretableModel(nn.Module):
             radial_mask_expanded = radial_mask
             binary_mask_expanded = binary_mask
         
-        # Apply mask to input - INVERTED: now 1 means full masking, 0 means no masking
-        # For binary mask, we use it directly (1 means fully masked)
-        # For radial mask, we multiply by (1 - mask_expanded)
-        masked_x = x * (1 - radial_mask_expanded)
+        # Apply mask to input - use only binary mask (no fade)
         
-        # Apply binary mask on top - fully mask pixels above threshold
-        masked_x = masked_x * (1 - binary_mask_expanded)
+        # masked_x = x * (1 - radial_mask_expanded)
+
+        masked_x = x * (1 - binary_mask_expanded)
         
         # Extract features for both masked and unmasked inputs
         # For MedMNIST, classifier should be ResNet18WithMLP or similar

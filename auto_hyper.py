@@ -31,8 +31,8 @@ def run_experiment(enable_aug, upper_threshold, enable_noise, data_flag, radial_
     print(f"\nStarting experiment: {experiment_name}")
     print("=" * 50)
     config = {
-        'data_flag': data_flag,
-        'batch_size': 128,
+        'data_flag': 'pathmnist',
+        'batch_size': 64,
         'num_workers': 2,
         'num_epochs': 4,
         'learning_rate': 0.001,
@@ -106,27 +106,27 @@ def run_experiment(enable_aug, upper_threshold, enable_noise, data_flag, radial_
 
 def objective(trial, data_flag):
     enable_aug = trial.suggest_categorical('enable_augmentation', [True, True])
-    upper_threshold = trial.suggest_float('upper_mask_level_threshold', 0.8, 0.9)
-    enable_noise = trial.suggest_categorical('enable_radial_mask_noise', [False, False])
-    radial_radius = trial.suggest_int('radial_radius', 3, 3)
-    radial_decay = trial.suggest_float('radial_decay', 1.0, 1.0)
-    lambda_mask = trial.suggest_float('lambda_mask', 0.0, 5.0)
+    upper_threshold = trial.suggest_float('upper_mask_level_threshold', 0.85, 0.95)
+    enable_noise = trial.suggest_categorical('enable_radial_mask_noise', [True, False])
+    radial_radius = trial.suggest_int('radial_radius', 0, 1.5)
+    radial_decay = trial.suggest_float('radial_decay', 0.0, 5)
+    lambda_mask = trial.suggest_float('lambda_mask', 0.0, 2.0)
     lambda_fully_masked = trial.suggest_float('lambda_fully_masked', 0.0, 2.0)
-    lambda_alignment = trial.suggest_float('lambda_alignment', 0.0, 5.0)
+    lambda_alignment = trial.suggest_float('lambda_alignment', 1.0, 5.0)
     dynamic_masked_weight_min = trial.suggest_float('dynamic_masked_weight_min', 0.0, 2.0)
     dynamic_masked_weight_max = trial.suggest_float('dynamic_masked_weight_max', 1.0, 10.0)
     acc, loss = run_experiment(
         enable_aug, upper_threshold, enable_noise, data_flag, radial_radius, radial_decay,
         lambda_mask, lambda_fully_masked, lambda_alignment, dynamic_masked_weight_min, dynamic_masked_weight_max
     )
-    # For single-objective: minimize loss
-    return loss
+    # For single-objective: maximize validation masked accuracy
+    return acc
     # For multi-objective: return (loss, -acc) or (acc, loss)
 
 def main():
     data_flag = 'pathmnist'  # Change to your desired MedMNIST dataset
     study = optuna.create_study(direction='maximize')
-    study.optimize(lambda trial: objective(trial, data_flag), n_trials=20)
+    study.optimize(lambda trial: objective(trial, data_flag), n_trials=24)
     print("Best trial parameters:", study.best_trial.params)
     print(f"Best validation ACC: {study.best_trial.value:.2f}")
     # Run final experiment with best hyperparameters

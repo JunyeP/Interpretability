@@ -14,6 +14,8 @@ import numpy as np
 import sys
 import argparse
 import warnings
+from PIL import Image
+from torchvision.transforms import InterpolationMode
 
 # Suppress specific NetworkX warning
 warnings.filterwarnings("ignore", message="networkx backend defined more than once")
@@ -41,10 +43,10 @@ def load_config(config_path=None):
     # Default configuration with all required keys
     default_config = {
         'data_flag': 'pathmnist',
-        'batch_size': 128,
+        'batch_size': 64,
         'num_workers': 2,
-        'num_epochs': 10,
-        'learning_rate': 0.001,
+        'num_epochs': 5,
+        'learning_rate': 0.0001,
         'experiment_name': 'medmnist_finetune_experiment',
         'log_dir': './logs',
         'pretrained_path': './pretrain/pathmnist/medmnist_resnet18/best_model.pth',
@@ -69,6 +71,10 @@ def load_config(config_path=None):
         'final_lambda_fully_masked': 0.2,
         'initial_lambda_alignment': 0.5,
         'final_lambda_alignment': 0.5,
+        # Entropy regularization scheduling parameters
+        'start_epoch_entropy': 0,
+        'initial_lambda_entropy': 0.0,
+        'final_lambda_entropy': 0.0,
         # Visualization and checkpoint intervals
         'visualization_interval': 1,
         'checkpoint_interval': 1,
@@ -86,107 +92,168 @@ def load_medmnist_dataset(config):
     DataClass = getattr(medmnist, info['python_class'])
     n_channels = info['n_channels']
     img_size = 224
-    data_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
+    
+    # Build train transforms: include augmentation if enabled
+    train_transform_list = []
+    if config.get('enable_augmentation', False):
+        aug_cfg = config.get('augmentation_transforms', {})
+        # Random or resized crop
+        if aug_cfg.get('random_crop', False):
+            train_transform_list.append(
+                transforms.RandomResizedCrop(
+                    img_size,
+                    interpolation=InterpolationMode.BILINEAR
+                )
+            )
+        else:
+            train_transform_list.append(
+                transforms.Resize(
+                    (img_size, img_size),
+                    interpolation=InterpolationMode.BILINEAR,
+                    antialias=True
+                )
+            )
+        if aug_cfg.get('random_horizontal_flip', False):
+            train_transform_list.append(transforms.RandomHorizontalFlip())
+        if aug_cfg.get('random_rotation', 0):
+            train_transform_list.append(transforms.RandomRotation(aug_cfg['random_rotation']))
+        if aug_cfg.get('color_jitter', {}):
+            train_transform_list.append(transforms.ColorJitter(**aug_cfg['color_jitter']))
+    else:
+        train_transform_list.append(
+            transforms.Resize(
+                (img_size, img_size),
+                interpolation=InterpolationMode.BILINEAR,
+                antialias=True
+            )
+        )
+    train_transform_list += [
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[.5]*n_channels, std=[.5]*n_channels)
+    ]
+    train_transform = transforms.Compose(train_transform_list)
+    # Validation and test transforms (no augmentation)
+    val_transform = transforms.Compose([
+        transforms.Resize(
+            (img_size, img_size),
+            interpolation=InterpolationMode.BILINEAR,
+            antialias=True
+        ),
         transforms.ToTensor(),
         transforms.Normalize(mean=[.5]*n_channels, std=[.5]*n_channels)
     ])
-    train_dataset = DataClass(split='train', transform=data_transform, download=True)
-    val_dataset = DataClass(split='val', transform=data_transform, download=True)
-    test_dataset = DataClass(split='test', transform=data_transform, download=True)
+
+    train_dataset = DataClass(split='train', transform=train_transform, download=True)
+    val_dataset = DataClass(split='val', transform=val_transform, download=True)
+    test_dataset = DataClass(split='test', transform=val_transform, download=True)
     train_loader = data.DataLoader(dataset=train_dataset, batch_size=config['batch_size'], shuffle=True, num_workers=config['num_workers'])
     val_loader = data.DataLoader(dataset=val_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=config['num_workers'])
     test_loader = data.DataLoader(dataset=test_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=config['num_workers'])
     return train_loader, val_loader, test_loader, info
 
 class MaskGenerator(nn.Module):
-    def __init__(self, in_channels=3):
+    def __init__(self, in_channels=3, base_filters=64):
         super(MaskGenerator, self).__init__()
-        # Use in_channels for the first conv layer
-        self.enc1 = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.enc2 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True)
-        )
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.enc3 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True)
-        )
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.bottleneck = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(0.4)
-        )
-        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.dec3 = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True)
-        )
-        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.dec2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True)
-        )
-        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
-        self.final = nn.Conv2d(64, 1, kernel_size=1)
+        # define a double-convolution block
+        def conv_block(in_ch, out_ch, dropout=False):
+            layers = [
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_ch),
+                nn.ReLU(inplace=True)
+            ]
+            if dropout:
+                layers.append(nn.Dropout2d(0.3))
+            return nn.Sequential(*layers)
+
+        # add AttentionBlock for skip connections
+        class AttentionBlock(nn.Module):
+            def __init__(self, F_g, F_l, F_int):
+                super(AttentionBlock, self).__init__()
+                self.W_g = nn.Sequential(
+                    nn.Conv2d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=True),
+                    nn.BatchNorm2d(F_int)
+                )
+                self.W_x = nn.Sequential(
+                    nn.Conv2d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=True),
+                    nn.BatchNorm2d(F_int)
+                )
+                self.psi = nn.Sequential(
+                    nn.Conv2d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
+                    nn.BatchNorm2d(1),
+                    nn.Sigmoid()
+                )
+                self.relu = nn.ReLU(inplace=True)
+
+            def forward(self, g, x):
+                g1 = self.W_g(g)
+                x1 = self.W_x(x)
+                psi = self.relu(g1 + x1)
+                psi = self.psi(psi)
+                return x * psi
+
+        # Encoder
+        self.enc1 = conv_block(in_channels, base_filters)
+        self.pool1 = nn.MaxPool2d(2)
+        self.enc2 = conv_block(base_filters, base_filters*2)
+        self.pool2 = nn.MaxPool2d(2)
+        self.enc3 = conv_block(base_filters*2, base_filters*4, dropout=True)
+        self.pool3 = nn.MaxPool2d(2)
+        self.enc4 = conv_block(base_filters*4, base_filters*8, dropout=True)
+        self.pool4 = nn.MaxPool2d(2)
+
+        # Bottleneck
+        self.bottleneck = conv_block(base_filters*8, base_filters*16, dropout=True)
+
+        # Decoder
+        self.up4 = nn.ConvTranspose2d(base_filters*16, base_filters*8, kernel_size=2, stride=2)
+        self.dec4 = conv_block(base_filters*16, base_filters*8, dropout=True)
+        self.up3 = nn.ConvTranspose2d(base_filters*8, base_filters*4, kernel_size=2, stride=2)
+        self.dec3 = conv_block(base_filters*8, base_filters*4, dropout=True)
+        self.up2 = nn.ConvTranspose2d(base_filters*4, base_filters*2, kernel_size=2, stride=2)
+        self.dec2 = conv_block(base_filters*4, base_filters*2)
+        self.up1 = nn.ConvTranspose2d(base_filters*2, base_filters, kernel_size=2, stride=2)
+        self.dec1 = conv_block(base_filters*2, base_filters)
+
+        # Final convolution to produce mask
+        self.final = nn.Conv2d(base_filters, 1, kernel_size=1)
+
+        # instantiate attention gates
+        self.att4 = AttentionBlock(base_filters*8, base_filters*8, base_filters*4)
+        self.att3 = AttentionBlock(base_filters*4, base_filters*4, base_filters*2)
+        self.att2 = AttentionBlock(base_filters*2, base_filters*2, base_filters)
+        self.att1 = AttentionBlock(base_filters, base_filters, base_filters//2)
 
     def forward(self, x):
-        enc1 = self.enc1(x)
-        pool1 = self.pool1(enc1)
-        enc2 = self.enc2(pool1)
-        pool2 = self.pool2(enc2)
-        enc3 = self.enc3(pool2)
-        pool3 = self.pool3(enc3)
-        bottleneck = self.bottleneck(pool3)
-        upconv3 = self.upconv3(bottleneck)
-        concat3 = torch.cat([upconv3, enc3], dim=1)
-        dec3 = self.dec3(concat3)
-        upconv2 = self.upconv2(dec3)
-        concat2 = torch.cat([upconv2, enc2], dim=1)
-        dec2 = self.dec2(concat2)
-        upconv1 = self.upconv1(dec2)
-        concat1 = torch.cat([upconv1, enc1], dim=1)
-        dec1 = self.dec1(concat1)
-        output = torch.sigmoid(self.final(dec1))
-        return output
+        e1 = self.enc1(x)
+        p1 = self.pool1(e1)
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
+        e3 = self.enc3(p2)
+        p3 = self.pool3(e3)
+        e4 = self.enc4(p3)
+        p4 = self.pool4(e4)
+        b = self.bottleneck(p4)
+
+        u4 = self.up4(b)
+        c4 = self.att4(u4, e4)
+        d4 = self.dec4(torch.cat([u4, c4], dim=1))
+
+        u3 = self.up3(d4)
+        c3 = self.att3(u3, e3)
+        d3 = self.dec3(torch.cat([u3, c3], dim=1))
+
+        u2 = self.up2(d3)
+        c2 = self.att2(u2, e2)
+        d2 = self.dec2(torch.cat([u2, c2], dim=1))
+
+        u1 = self.up1(d2)
+        c1 = self.att1(u1, e1)
+        d1 = self.dec1(torch.cat([u1, c1], dim=1))
+
+        return torch.sigmoid(self.final(d1))
 
 class ResNet18WithMLP(nn.Module):
     def __init__(self, num_classes=10, in_channels=3):
@@ -325,10 +392,10 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
     
     # Perform initial evaluation
-    print("\nPerforming initial evaluation...")
-    train_metrics, val_metrics, test_metrics = perform_initial_evaluation(
-        model, train_loader, val_loader, test_loader, criterion, device, log_dir, classes
-    )
+    #print("\nPerforming initial evaluation...")
+    #train_metrics, val_metrics, test_metrics = perform_initial_evaluation(
+    #    model, train_loader, val_loader, test_loader, criterion, device, log_dir, classes
+    #)
     
     # Train model using the train_model function from toolkits
     print("\nStarting model training...")
