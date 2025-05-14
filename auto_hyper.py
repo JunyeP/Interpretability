@@ -31,10 +31,10 @@ def run_experiment(enable_aug, upper_threshold, enable_noise, data_flag, radial_
     print(f"\nStarting experiment: {experiment_name}")
     print("=" * 50)
     config = {
-        'data_flag': 'pathmnist',
-        'batch_size': 64,
+        'data_flag': 'organamnist',
+        'batch_size': 32,
         'num_workers': 2,
-        'num_epochs': 4,
+        'num_epochs': 12,
         'learning_rate': 0.001,
         'radial_radius': radial_radius,
         'radial_decay': radial_decay,
@@ -55,8 +55,8 @@ def run_experiment(enable_aug, upper_threshold, enable_noise, data_flag, radial_
         'radial_mask_noise_range': 0.2,
         'experiment_name': experiment_name,
         'log_dir': './logs',
-        'pretrained_path': 'pretrain/pathmnist/medmnist_resnet18/best_model.pth',
-        'freeze_cnn': False,
+        'pretrained_path': 'pretrain/organamnist/medmnist_resnet18/best_model.pth',
+        'freeze_cnn': True,
         'lambda_mask': lambda_mask,
         'lambda_fully_masked': lambda_fully_masked,
         'lambda_alignment': lambda_alignment,
@@ -108,9 +108,9 @@ def objective(trial, data_flag):
     enable_aug = trial.suggest_categorical('enable_augmentation', [True, True])
     upper_threshold = trial.suggest_float('upper_mask_level_threshold', 0.85, 0.95)
     enable_noise = trial.suggest_categorical('enable_radial_mask_noise', [True, False])
-    radial_radius = trial.suggest_int('radial_radius', 0, 1.5)
-    radial_decay = trial.suggest_float('radial_decay', 0.0, 5)
-    lambda_mask = trial.suggest_float('lambda_mask', 0.0, 2.0)
+    radial_radius = trial.suggest_int('radial_radius', 1, 3)
+    radial_decay = trial.suggest_float('radial_decay', 1, 3)
+    lambda_mask = trial.suggest_float('lambda_mask', 0.0001, 2.0)
     lambda_fully_masked = trial.suggest_float('lambda_fully_masked', 0.0, 2.0)
     lambda_alignment = trial.suggest_float('lambda_alignment', 1.0, 5.0)
     dynamic_masked_weight_min = trial.suggest_float('dynamic_masked_weight_min', 0.0, 2.0)
