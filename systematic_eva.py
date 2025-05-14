@@ -12,7 +12,7 @@ def find_experiment_folders(logs_dir):
     experiment_folders = []
     for item in os.listdir(logs_dir):
         item_path = os.path.join(logs_dir, item)
-        if os.path.isdir(item_path) and item.startswith('cifar10_finetune'):
+        if os.path.isdir(item_path) and item.startswith('gtsrb_finetune'):
             # Find the timestamped subfolder
             for subitem in os.listdir(item_path):
                 subitem_path = os.path.join(item_path, subitem)
@@ -30,7 +30,7 @@ def run_evaluation(experiment_path, config):
     """Run evaluate_cifar10.py for a single experiment."""
     # Construct the paths
     pretrained_path = './pretrained_best_model.pth'
-    interpretable_path = os.path.join(experiment_path, 'checkpoints', 'final_epoch.pth')
+    interpretable_path = os.path.join(experiment_path, 'checkpoints', 'best_epoch.pth')
     
     # Extract hyperparameters from config and convert radius to integer
     radial_radius = int(config['radial_radius'])  # Convert to integer
@@ -39,7 +39,7 @@ def run_evaluation(experiment_path, config):
     
     # Run the evaluation script
     cmd = [
-        'python', 'evaluate_cifar10.py',
+        'python', 'evaluate_gtsrb.py',
         '--experiment_path', experiment_path,
         '--pretrained_path', pretrained_path,
         '--interpretable_path', interpretable_path,
